@@ -78,21 +78,21 @@ task:
 
 ```mermaid
 flowchart LR
-    U[用户] --> L[Lead agent\n用户沟通 / 解释 / 设计 / 审查]
-    L -->|首次真实委派| T[task\n创建 fusion-sidekick]
-    T --> S[Persistent sidekick\n探索 / 实现 / 验证 / 环境操作]
-    L -->|后续 brief| H[hub send\n复用实际 worker ID]
+    U["用户"] --> L["Lead agent<br/>用户沟通 / 解释 / 设计 / 审查"]
+    L -->|首次真实委派| T["task<br/>创建 fusion-sidekick"]
+    T --> S["Persistent sidekick<br/>探索 / 实现 / 验证 / 环境操作"]
+    L -->|后续 brief| H["hub send<br/>复用实际 worker ID"]
     H --> S
     S -->|completion report + evidence| L
-    L --> R[审查变更与证据]
+    L --> R["审查变更与证据"]
     R --> U
 
-    F[/fusion 状态] --> P[before_agent_start\n注入 Fusion contract]
-    P --> G[handoff gate]
-    G -.阻止普通 lead 直接执行.-> X[edit / write / bash / eval / ...]
-    C[fusion_control takeover] --> X
-    C2[fusion_control delegate] --> G
-    W[Activity widget] --> L
+    F["/fusion 状态"] --> P["before_agent_start<br/>注入 Fusion contract"]
+    P --> G["handoff gate"]
+    G -->|阻止普通 lead 直接执行| X["edit / write / bash / eval / ..."]
+    C["fusion_control takeover"] --> X
+    C2["fusion_control delegate"] --> G
+    W["Activity widget"] --> L
     W --> S
 ```
 
