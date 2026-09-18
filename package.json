@@ -1,0 +1,37 @@
+{
+  "name": "omp-fusion",
+  "version": "0.1.0",
+  "description": "Fusion lead/sidekick mode for omp — /fusion pairs a lead agent with a persistent delegated worker, inspired by Devin Local Fusion",
+  "keywords": [
+    "pi-package",
+    "omp",
+    "fusion",
+    "sidekick",
+    "delegation",
+    "multi-agent",
+    "extension"
+  ],
+  "license": "MIT",
+  "author": "wakaka6",
+  "type": "module",
+  "files": [
+    "fusion.js",
+    "fusion-status.js",
+    "agents/",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "scripts": {
+    "smoke:delegation": "node tests/delegation-smoke.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./fusion.js"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./fusion.js"
+    ]
+  }
+}
