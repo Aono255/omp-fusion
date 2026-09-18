@@ -78,21 +78,21 @@ Model IDs must be resolvable by your local omp configuration; the example above 
 
 ```mermaid
 flowchart LR
-    U[User] --> L[Lead agent\ncommunication / interpretation / design / review]
-    L -->|first real delegation| T[task\ncreates fusion-sidekick]
-    T --> S[Persistent sidekick\nexplore / implement / verify / env ops]
-    L -->|later briefs| H[hub send\nreuse actual worker ID]
+    U["User"] --> L["Lead agent<br/>communication / interpretation / design / review"]
+    L -->|first real delegation| T["task<br/>creates fusion-sidekick"]
+    T --> S["Persistent sidekick<br/>explore / implement / verify / env ops"]
+    L -->|later briefs| H["hub send<br/>reuse actual worker ID"]
     H --> S
     S -->|completion report + evidence| L
-    L --> R[Review changes & evidence]
+    L --> R["Review changes & evidence"]
     R --> U
 
-    F[/fusion state] --> P[before_agent_start\ninject Fusion contract]
-    P --> G[handoff gate]
-    G -.blocks plain lead direct execution.-> X[edit / write / bash / eval / ...]
-    C[fusion_control takeover] --> X
-    C2[fusion_control delegate] --> G
-    W[Activity widget] --> L
+    F["/fusion state"] --> P["before_agent_start<br/>inject Fusion contract"]
+    P --> G["handoff gate"]
+    G -->|blocks plain lead direct execution| X["edit / write / bash / eval / ..."]
+    C["fusion_control takeover"] --> X
+    C2["fusion_control delegate"] --> G
+    W["Activity widget"] --> L
     W --> S
 ```
 
