@@ -81,7 +81,7 @@ flowchart LR
     U["User"] --> L["Lead agent<br/>communication / interpretation / design / review"]
     L -->|first real delegation| T["task<br/>creates fusion-sidekick"]
     T --> S["Persistent sidekick<br/>explore / implement / verify / env ops"]
-    L -->|later briefs| H["hub send<br/>reuse actual worker ID"]
+    L -->|later briefs| H["write agent://ID<br/>reuse actual worker ID"]
     H --> S
     S -->|completion report + evidence| L
     L --> R["Review changes & evidence"]
@@ -111,8 +111,8 @@ flowchart LR
 
 1. `/fusion` appends `omp.fusion.state` to the current session; the state is re-read across branch, tree, and switch navigation.
 2. `before_agent_start` appends the Fusion contract to the lead system prompt based on state; it never fakes an "on" state when Fusion is off or unset.
-3. The first real hands-on delegation creates `fusion-sidekick`, requests the name `sidekick`, and stores the returned worker ID.
-4. Later requests send new briefs to the same worker via `hub send` instead of creating agents repeatedly.
+3. The first real hands-on delegation creates `fusion-sidekick` through `task`, requests the name `Sidekick`, and stores the returned worker ID (which can differ from the requested name, e.g. `Sidekick-2`).
+4. Later requests send new briefs to the same worker by writing to `agent://<ID>` instead of creating agents repeatedly; the lead then calls `wait` for the report. Messaging a parked sidekick revives it with its history.
 5. The sidekick returns a completion report with evidence; the lead reviews the changes and verification before reporting to the user.
 6. After the request ends, `takeover` is not carried into the next request; session navigation also clears it, so stale temporary authorization cannot leak forward.
 
@@ -139,9 +139,9 @@ An effective brief contains: the goal, relevant code locations, key design decis
 
 While Fusion is on and the current request has no takeover, the runtime blocks the lead from directly calling these execution paths:
 
-- `edit`, `write`, `bash`, `eval`, `exec`, `python`, `apply_patch`, `ast_edit`, `debug`, `ssh`
+- `edit`, `bash`, `eval`, `exec`, `python`, `apply_patch`, `ast_edit`, `debug`, `ssh` — including devices reached through `write xd://<device>`, which omp re-checks under the device's own name
+- `write` to files and to any URL other than the coordination targets `agent://` (brief the sidekick), `out://`, `local://`, `xd://`, and `proc://<id>/kill`
 - LSP operations that change code or configuration: `rename`, `rename_file`, `code_actions`, `request`
-- `hub` operations that start processes or message a specific worker
 
 Reads, ordinary delegation, waiting on workers, and read-only LSP operations remain available. The gate's purpose is not privilege escalation — it makes "Fusion is on but the lead is secretly executing inline" observable and blockable.
 
@@ -172,8 +172,8 @@ This plugin borrows Devin Local Fusion's **collaboration shape**, not an externa
 | Devin Fusion idea | omp-fusion implementation |
 | --- | --- |
 | Lead / execution-worker split | `fusion.js` injects the lead contract; `fusion-sidekick.md` performs delegated execution |
-| Worker keeps context across tasks | First use creates the sidekick via `task`; later briefs reuse the same worker ID via `hub send` |
-| Lead and worker can run in parallel | The native task launch may return early; the lead only parallelizes genuinely independent work, otherwise waits via `hub wait` |
+| Worker keeps context across tasks | First use creates the sidekick via `task`; later briefs reuse the same worker ID via `write agent://<ID>` |
+| Lead and worker can run in parallel | The task launch returns while the sidekick runs; the lead only parallelizes genuinely independent work, otherwise waits via `wait` |
 | Worker reports execution evidence | The sidekick's final report must include changes, paths, verification results, and blockers |
 | Clear responsibility boundary | The handoff gate blocks plain lead direct execution; lead-only scenarios use explicit `takeover` |
 | Visible run state | `fusion-status.js` shows Lead and Sidekick models, phases, and tool status |
@@ -230,6 +230,7 @@ omp-fusion/
 - The sidekick's working permissions remain bound by the current omp session, tools, and filesystem permissions.
 - The handoff gate only covers the direct-execution entry points the plugin explicitly recognizes; it is not a security sandbox and does not replace review.
 - `npm run smoke:delegation` is an opt-in integration smoke that uses your environment's omp CLI and model credentials; use the control-logic tests when those are unavailable.
+- Requires omp 18.3.0 or later, where peer messaging moved from the removed `hub` tool to `write agent://<ID>` and `wait`.
 
 ## License
 

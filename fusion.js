@@ -12,7 +12,9 @@ import createFusionStatus from "./fusion-status.js";
 
 const STATE_TYPE = "omp.fusion.state";
 const SIDEKICK_AGENT = "fusion-sidekick";
-const SIDEKICK_NAME = "sidekick";
+// omp's task tool asks for CamelCase names; the returned ID may still differ
+// (e.g. "Sidekick-2") when the name is taken, so the lead keeps the real ID.
+const SIDEKICK_NAME = "Sidekick";
 
 // npm-installed plugins are not scanned by omp's task-agent discovery (which
 // only reads the marketplace registry), so the bundled sidekick definition is
@@ -71,7 +73,7 @@ function ensureSidekickAgent() {
 }
 
 const BRIEF_POLICY = `Give the sidekick the goal, relevant code locations, consequential design decisions, constraints, hard edge cases, and observable acceptance criteria. Let it choose routine implementation details and targeted verification commands. Supply code snippets only when an exact algorithm or interface is itself the decision. Allow grounded pushback; resolve conflicting evidence before proceeding.`;
-const SCHEDULING_POLICY = `The native task launch may return while the sidekick runs. If you have genuinely independent lead work, do it during the handoff. Otherwise wait through hub; do not invent work or duplicate the sidekick's investigation. Receive the actual completion report before reviewing or answering. Later briefs go to the same worker through hub send; use await: true when you need its result immediately.`;
+const SCHEDULING_POLICY = `The task launch returns while the sidekick runs, and its completion report is delivered to you automatically. If you have genuinely independent lead work, do it during the handoff. Otherwise call wait; do not invent work or duplicate the sidekick's investigation. Receive the actual completion report before reviewing or answering. Later briefs go to the same worker by writing the brief as content to agent://<ID>; delivery returns immediately (a parked sidekick is revived with its history), then call wait for its report.`;
 const ENFORCE_HANDOFF = true;
 const CONTRACT = `<fusion_contract>
 You lead a persistent pair. Own user communication, interpretation of ambiguity, consequential design, review, and authority actions. The sidekick owns delegated exploration, implementation, tests, and environment operations.
@@ -79,7 +81,7 @@ You lead a persistent pair. Own user communication, interpretation of ambiguity,
 For each request:
 1. Answer conversation and planning yourself. For hands-on work, inspect only enough to settle the goal and consequential choices, then dispatch a real brief. A promise or idle worker is not delegation.
 2. ${BRIEF_POLICY}
-3. Create agent "${SIDEKICK_AGENT}" with requested name "${SIDEKICK_NAME}" on its first real assignment. Retain the returned ID and reuse it, recovering it through hub list when necessary. Its context and runtime persist; share briefs, evidence, and feedback rather than your complete conversation. Mention existing processes when relevant so they are reused.
+3. Create agent "${SIDEKICK_AGENT}" with requested name "${SIDEKICK_NAME}" through task on its first real assignment. Retain the ID task returns (it can differ from the requested name) and reuse it, recovering it through read history:// when necessary. Do not spawn a second sidekick while one exists. Its context and runtime persist; share briefs, evidence, and feedback rather than your complete conversation. Mention existing processes when relevant so they are reused.
 4. ${SCHEDULING_POLICY}
 5. Review the changed code and reported evidence; do not repeat successful checks without a concrete reason to doubt them. Batch corrections into one brief. If guided corrections fail or the worker cannot solve the problem, take over and finish. Keep the user informed of results, not internal delegation ceremony.
 
@@ -90,6 +92,18 @@ Before direct execution for lead-only work or recovery, call fusion_control with
 
 const OFF_POLICY =
   "Fusion mode is OFF. No Fusion pairing is required for this request; use the ordinary tool and delegation policies, regardless of earlier Fusion messages in the conversation.";
+
+// `write` is both file mutation and omp's URL transport. Coordination targets
+// stay open to the lead: agent:// (brief/steer the sidekick), out:// (progress
+// to the user), local:// (shared brief artifacts), proc://<id>/kill (stop a
+// job), and xd:// (device calls re-emit tool_call under the device's own name,
+// so mutating devices such as ast_edit or lsp rename are gated there).
+// Everything else — files, ssh://, cfg://, service stdin — is direct execution.
+const COORDINATION_WRITE = /^(?:agent|out|local|xd):\/\/|^proc:\/\/[^/?#]+\/kill$/;
+
+function isDirectWrite(path) {
+  return typeof path !== "string" || !COORDINATION_WRITE.test(path.trim());
+}
 
 export default function fusionMode(pi) {
   let active = false;
@@ -146,6 +160,10 @@ export default function fusionMode(pi) {
     description:
       "Declare lead takeover for lead-only authority, critical analysis, browser work or recovery; return to delegated execution when done. Does not grant security permissions or stop workers.",
     defaultInactive: true,
+    // Extension tools default to "discoverable", which mounts them behind
+    // `write xd://`; keep the control top-level so the lead can always reach it.
+    loadMode: "essential",
+    approval: "read",
     parameters: pi.zod.object({
       action: pi.zod.enum(["takeover", "delegate"]),
       reason: pi.zod.string().min(1),
@@ -180,7 +198,6 @@ export default function fusionMode(pi) {
     const direct =
       [
         "edit",
-        "write",
         "bash",
         "eval",
         "exec",
@@ -190,18 +207,16 @@ export default function fusionMode(pi) {
         "debug",
         "ssh",
       ].includes(event.toolName) ||
+      (event.toolName === "write" && isDirectWrite(event.input?.path)) ||
       (event.toolName === "lsp" &&
         ["rename", "rename_file", "code_actions", "request"].includes(
-          event.input.action,
-        )) ||
-      (event.toolName === "hub" &&
-        (["start", "restart"].includes(event.input.op) ||
-          (event.input.op === "send" && event.input.name)));
+          event.input?.action,
+        ));
     if (direct)
       return {
         block: true,
         reason:
-          "Fusion delegates hands-on work to its persistent sidekick. For lead-only work or recovery, declare takeover with fusion_control first.",
+          "Fusion delegates hands-on work to its persistent sidekick: brief it through task or by writing to agent://<ID>. For lead-only work or recovery, declare takeover with fusion_control first.",
       };
   });
   async function syncControlTool() {

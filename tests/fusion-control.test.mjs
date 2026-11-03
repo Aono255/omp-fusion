@@ -22,7 +22,7 @@ const FUSION_OFF_BRANCH = [
   { type: "custom", customType: "omp.fusion.state", data: { active: false } },
 ];
 
-function createPi(initialTools = ["read", "edit", "bash", "task", "hub"]) {
+function createPi(initialTools = ["read", "write", "edit", "bash", "task", "wait"]) {
   const handlers = new Map();
   const commands = new Map();
   const tools = new Map();
@@ -123,20 +123,31 @@ describe("fusion_control handoff enforcement", () => {
     }
     const [lspRename] = await toolCall(h, "lsp", { action: "rename" });
     expect(lspRename?.block).toBe(true);
-    const [hubStart] = await toolCall(h, "hub", { op: "start" });
-    expect(hubStart?.block).toBe(true);
-    const [hubNamedSend] = await toolCall(h, "hub", {
-      op: "send",
-      name: "worker",
-    });
-    expect(hubNamedSend?.block).toBe(true);
+    // `write` mutates files and remote/config/service targets...
+    for (const path of [
+      "src/page.ts",
+      "/tmp/out.txt",
+      "ssh://host/etc/app.conf",
+      "cfg://task/eager",
+      "proc://dev-server",
+      "proc://bg_1/mode",
+      "skill://x/agent://y",
+    ]) {
+      const [result] = await toolCall(h, "write", { path, content: "x" });
+      expect(result?.block).toBe(true);
+    }
 
-    // Read-only and delegation tools stay available.
+    // ...but read-only, delegation, and coordination paths stay available.
     for (const [name, input] of [
-      ["read", {}],
+      ["read", { path: "history://" }],
       ["task", { agent: "fusion-sidekick" }],
-      ["hub", { op: "send", to: "sidekick" }],
-      ["hub", { op: "wait" }],
+      ["write", { path: "agent://Sidekick", content: "next brief" }],
+      ["write", { path: "agent://all", content: "status?" }],
+      ["write", { path: "out://progress.md", content: "update" }],
+      ["write", { path: "local://brief.md", content: "brief" }],
+      ["write", { path: "proc://bg_1/kill" }],
+      ["write", { path: "xd://lsp", content: '{"action":"hover"}' }],
+      ["wait", {}],
       ["lsp", { action: "hover" }],
       ["fusion_control", { action: "takeover", reason: "x" }],
     ]) {
@@ -203,20 +214,20 @@ describe("fusion_control handoff enforcement", () => {
   });
 
   it("activates fusion_control only while on and preserves unrelated tools", async () => {
-    const h = createPi(["read", "edit", "task", "hub"]);
+    const h = createPi(["read", "edit", "task", "wait"]);
     fusionMode(h.pi);
     await startFusion(h);
     expect(h.getActiveTools()).toEqual([
       "read",
       "edit",
       "task",
-      "hub",
+      "wait",
       "fusion_control",
     ]);
 
     // Toggling off restores the original set exactly.
     await h.commands.get("fusion").handler("", makeCtx(FUSION_ON_BRANCH));
-    expect(h.getActiveTools()).toEqual(["read", "edit", "task", "hub"]);
+    expect(h.getActiveTools()).toEqual(["read", "edit", "task", "wait"]);
   });
 
   it("rejects blank reasons and aborted calls without changing state", async () => {

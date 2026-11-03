@@ -227,15 +227,23 @@ export default function createFusionStatus(pi, sidekickAgent) {
         }
       }
       if (message.role !== "toolResult") continue;
-      for (const result of message.details?.results ?? []) {
-        if (result.agent !== sidekickAgent) continue;
+      // Blocking spawns land in `results`; async spawns (omp's default) only
+      // carry the agent in `progress`, whose status is a launch-time snapshot.
+      const details = message.details;
+      for (const result of [
+        ...(details?.results ?? []),
+        ...(details?.progress ?? []),
+      ]) {
+        if (result?.agent !== sidekickAgent || !result.id) continue;
         sidekick.id = result.id;
-        sidekick.model = result.resolvedModelIdentity ?? "";
-        sidekick.phase = result.aborted
-          ? "cancelled"
-          : result.exitCode === 0
-            ? "idle"
-            : "error";
+        sidekick.model = result.resolvedModelIdentity ?? sidekick.model;
+        sidekick.phase =
+          result.aborted || result.status === "aborted"
+            ? "cancelled"
+            : result.status === "failed" ||
+                (result.exitCode !== undefined && result.exitCode !== 0)
+              ? "error"
+              : "idle";
       }
     }
     setActive(ctx, enabled);

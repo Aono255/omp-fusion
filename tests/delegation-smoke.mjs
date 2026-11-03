@@ -14,7 +14,27 @@ const prompts = [
   "Add an exported isBlank(value) function to normalize.mjs: return true for an all-whitespace string and false for a string containing non-whitespace. Preserve normalizeName. Verify both outcomes with Node. Do not run formatters, lint, builds, other test suites, or commit changes.",
   "Explain the difference between trimming whitespace and lowercasing a string in one sentence.",
 ];
-const directExecution = new Set(["edit", "write", "bash", "eval"]);
+// `write` is also omp's URL transport; only file and other non-coordination
+// targets count as the lead executing work itself.
+const coordinationWrite = /^(?:agent|out|local|xd):\/\/|^proc:\/\/[^/?#]+\/kill$/;
+function isDirectExecution(call) {
+  if (call.name === "write")
+    return !coordinationWrite.test(String(call.arguments?.path ?? ""));
+  return ["edit", "bash", "eval"].includes(call.name);
+}
+function briefsWorker(call, id) {
+  const path = String(call.arguments?.path ?? "");
+  return (
+    call.name === "write" &&
+    (path === `agent://${id}` || path.startsWith(`agent://${id}?`))
+  );
+}
+function briefsAnyWorker(call) {
+  return (
+    call.name === "write" &&
+    /^agent:\/\//.test(String(call.arguments?.path ?? ""))
+  );
+}
 
 try {
   writeFileSync(
@@ -33,6 +53,7 @@ try {
       "--no-rules",
       "--no-lsp",
       "--no-extensions",
+      "--wait-async",
       "--extension",
       pluginRoot,
       ...process.argv.slice(2),
@@ -76,15 +97,9 @@ try {
   for (const line of run.stdout.split("\n")) {
     if (!line.trim()) continue;
     const event = JSON.parse(line);
-    if (
-      event.type === "tool_execution_update" &&
-      ["task", "hub"].includes(event.toolName)
-    )
+    if (event.type === "tool_execution_update" && event.toolName === "task")
       collect(event.partialResult?.details);
-    if (
-      event.type === "tool_execution_end" &&
-      ["task", "hub"].includes(event.toolName)
-    )
+    if (event.type === "tool_execution_end" && event.toolName === "task")
       collect(event.result?.details);
     if (event.type !== "message_end") continue;
     const message = event.message;
@@ -109,19 +124,12 @@ try {
     }
     if (message.role === "custom" && message.customType === "async-result")
       collect(message.details);
-    if (
-      message.role === "toolResult" &&
-      ["task", "hub"].includes(message.toolName)
-    )
+    if (message.role === "toolResult" && message.toolName === "task")
       collect(message.details);
   }
   assert.ok(replies[3], "The lead must answer the conversational request");
   assert.ok(
-    !calls[3].some(
-      (call) =>
-        call.name === "task" ||
-        (call.name === "hub" && call.arguments.op === "send"),
-    ),
+    !calls[3].some((call) => call.name === "task" || briefsAnyWorker(call)),
     "Conversation must not start or brief a worker",
   );
 
@@ -131,7 +139,7 @@ try {
   assert.equal(
     workers.length,
     1,
-    `Ordinary Fusion work must create one real sidekick, not edit inline or spawn again:\n${JSON.stringify({ leadModels: [...leadModels], calls: calls.map((items) => items.map((call) => ({ tool: call.name, op: call.arguments.op, to: call.arguments.to }))), workers: workers.map(({ id, exitCode, status, error }) => ({ id, exitCode, status, error })), stderr: run.stderr }, null, 2)}`,
+    `Ordinary Fusion work must create one real sidekick, not edit inline or spawn again:\n${JSON.stringify({ leadModels: [...leadModels], calls: calls.map((items) => items.map((call) => ({ tool: call.name, path: call.arguments.path }))), workers: workers.map(({ id, exitCode, status, error }) => ({ id, exitCode, status, error })), stderr: run.stderr }, null, 2)}`,
   );
   const worker = workers[0];
   const workerFinished =
@@ -149,31 +157,21 @@ try {
     "First assignment must dispatch the sidekick",
   );
   assert.ok(
-    calls[1].some(
-      (call) =>
-        call.name === "hub" &&
-        call.arguments.op === "send" &&
-        call.arguments.to === workers[0].id,
-    ),
+    calls[1].some((call) => briefsWorker(call, workers[0].id)),
     "Follow-up work must reuse the actual sidekick ID",
   );
   for (let index = 0; index < 2; index += 1) {
     assert.ok(
-      !calls[index].some((call) => directExecution.has(call.name)),
+      !calls[index].some(isDirectExecution),
       "The lead performed ordinary implementation or execution while Fusion was enabled",
     );
   }
   assert.ok(
-    calls[2].some((call) => directExecution.has(call.name)),
+    calls[2].some(isDirectExecution),
     "Disabling Fusion must restore normal inline work",
   );
   assert.ok(
-    !calls[2].some(
-      (call) =>
-        call.name === "hub" &&
-        call.arguments.op === "send" &&
-        call.arguments.to === workers[0].id,
-    ),
+    !calls[2].some((call) => briefsWorker(call, workers[0].id)),
     "Disabled Fusion kept routing work to the old sidekick",
   );
 

@@ -81,7 +81,7 @@ flowchart LR
     U["用户"] --> L["Lead agent<br/>用户沟通 / 解释 / 设计 / 审查"]
     L -->|首次真实委派| T["task<br/>创建 fusion-sidekick"]
     T --> S["Persistent sidekick<br/>探索 / 实现 / 验证 / 环境操作"]
-    L -->|后续 brief| H["hub send<br/>复用实际 worker ID"]
+    L -->|后续 brief| H["write agent://ID<br/>复用实际 worker ID"]
     H --> S
     S -->|completion report + evidence| L
     L --> R["审查变更与证据"]
@@ -111,8 +111,8 @@ flowchart LR
 
 1. `/fusion` 将 `omp.fusion.state` 追加到当前 session；状态会随 branch、tree、switch 重新读取。
 2. `before_agent_start` 根据状态向 lead system prompt 追加 Fusion contract；关闭或没有 Fusion 状态时不会伪造开启状态。
-3. 第一次真实 hands-on 委派创建 `fusion-sidekick`，请求名为 `sidekick`，并保存返回的实际 worker ID。
-4. 后续请求通过 `hub send` 把新 brief 发给同一个 worker，而不是重复创建 agent。
+3. 第一次真实 hands-on 委派通过 `task` 创建 `fusion-sidekick`，请求名为 `Sidekick`，并保存返回的实际 worker ID（可能与请求名不同，例如 `Sidekick-2`）。
+4. 后续请求通过写入 `agent://<ID>` 把新 brief 发给同一个 worker，而不是重复创建 agent；随后 lead 调用 `wait` 等待报告。向已 parked 的 sidekick 发消息会带着历史把它唤醒。
 5. sidekick 返回完成报告和证据；lead 审查变更与验证结果，再向用户报告。
 6. 请求结束后，`takeover` 不会自动跨请求继承；session 导航也会清除它，避免旧的临时授权泄漏到下一次请求。
 
@@ -139,9 +139,9 @@ flowchart LR
 
 Fusion 开启且当前请求没有 takeover 时，运行时会阻止 lead 直接调用以下执行路径：
 
-- `edit`、`write`、`bash`、`eval`、`exec`、`python`、`apply_patch`、`ast_edit`、`debug`、`ssh`
+- `edit`、`bash`、`eval`、`exec`、`python`、`apply_patch`、`ast_edit`、`debug`、`ssh`，也包括通过 `write xd://<device>` 调用的设备（omp 会以设备本身的名字再次检查）
+- 写入文件，或写入除协作目标 `agent://`（给 sidekick 发 brief）、`out://`、`local://`、`xd://`、`proc://<id>/kill` 之外任何 URL 的 `write`
 - 会改变代码或配置的 LSP 操作：`rename`、`rename_file`、`code_actions`、`request`
-- 启动进程或向指定 worker 发消息的 `hub` 操作
 
 读取、普通委派、等待 worker 和只读 LSP 操作仍然可用。这个 gate 的目的不是权限升级，而是让“已开启 Fusion 却偷偷由 lead 内联执行”的路径变得可观察且可阻断。
 
@@ -172,8 +172,8 @@ fusion_control({
 | Devin Fusion 思路 | omp-fusion 对应实现 |
 | --- | --- |
 | lead 与执行 worker 分工 | `fusion.js` 注入 lead contract，`fusion-sidekick.md` 承担 delegated execution |
-| worker 跨任务保持上下文 | 首次使用 `task` 创建 sidekick，后续使用同一 worker ID 的 `hub send` |
-| lead 与 worker 可以并行 | native task launch 可先返回；lead 仅在存在真实独立工作时并行，否则通过 `hub wait` 等待 |
+| worker 跨任务保持上下文 | 首次使用 `task` 创建 sidekick，后续通过同一 worker ID 的 `write agent://<ID>` 发送 brief |
+| lead 与 worker 可以并行 | task launch 在 sidekick 运行时即返回；lead 仅在存在真实独立工作时并行，否则通过 `wait` 等待 |
 | worker 回传执行证据 | sidekick final report 要求提供变更、路径、验证结果和阻塞点 |
 | 清晰的职责边界 | handoff gate 阻止普通 lead 直接执行；lead-only 场景显式 `takeover` |
 | 可见的运行状态 | `fusion-status.js` 展示 Lead 与 Sidekick 的模型、阶段和工具状态 |
@@ -230,3 +230,4 @@ omp-fusion/
 - sidekick 的工作权限仍受 omp 当前会话、工具和文件系统权限约束。
 - handoff gate 只覆盖插件显式识别的直接执行入口；它不是安全沙箱，也不能替代审查。
 - `npm run smoke:delegation` 是 opt-in 集成冒烟，会使用当前环境的 omp CLI 和模型凭据；没有这些依赖时使用控制逻辑测试。
+- 需要 omp 18.3.0 或更高版本：从该版本起，`hub` 工具被移除，peer 消息改为 `write agent://<ID>` 加 `wait`。

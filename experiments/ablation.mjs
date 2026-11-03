@@ -122,7 +122,7 @@ function variant(source, agent, config) {
     source = replaceOne(
       source,
       /const SCHEDULING_POLICY = `[\s\S]*?`;/,
-      "const SCHEDULING_POLICY = `The initial task launch blocks until the worker reports. Wait for its actual report before continuing. Later briefs reuse the same worker through hub send with await: true. Do not duplicate the worker investigation or invent reports.`;",
+      "const SCHEDULING_POLICY = `The initial task launch blocks until the worker reports. Wait for its actual report before continuing. Later briefs reuse the same worker by writing to agent://<ID>, then calling wait for its report. Do not duplicate the worker investigation or invent reports.`;",
     );
   source = replaceOne(
     source,
@@ -228,7 +228,11 @@ function summarize(stdout, rows) {
   const overlap = rows.filter(
     (r) =>
       r.kind === "tool_start" &&
-      !["hub", "task", "fusion_control", "todo"].includes(r.event.toolName) &&
+      !["wait", "task", "fusion_control", "todo"].includes(r.event.toolName) &&
+      !(
+        r.event.toolName === "write" &&
+        /^agent:\/\//.test(String(r.event.args?.path ?? ""))
+      ) &&
       windows.some(([s, e]) => r.at >= s && r.at <= e),
   );
   const blocks = rows.filter(
