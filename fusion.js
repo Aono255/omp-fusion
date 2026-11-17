@@ -12,16 +12,18 @@ import createFusionStatus from "./fusion-status.js";
 
 const STATE_TYPE = "omp.fusion.state";
 const SIDEKICK_AGENT = "fusion-sidekick";
+const SCOUT_AGENT = "fusion-scout";
+const HELPER_AGENT = "fusion-helper";
 // omp's task tool asks for CamelCase names; the returned ID may still differ
 // (e.g. "Sidekick-2") when the name is taken, so the lead keeps the real ID.
 const SIDEKICK_NAME = "Sidekick";
 
 // npm-installed plugins are not scanned by omp's task-agent discovery (which
-// only reads the marketplace registry), so the bundled sidekick definition is
-// installed into the user agents dir on session start. A sha marker records
-// the content we installed: the file is refreshed only while it still matches
-// a previously installed revision, so user edits are never overwritten.
-const SIDEKICK_MARKER = ".fusion-sidekick.sha256";
+// only reads the marketplace registry), so the bundled agent definitions are
+// installed into the user agents dir on session start. A per-agent sha marker
+// records the content we installed: a file is refreshed only while it still
+// matches a previously installed revision, so user edits are never overwritten.
+const BUNDLED_AGENTS = [SIDEKICK_AGENT, SCOUT_AGENT, HELPER_AGENT];
 
 function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
@@ -36,22 +38,22 @@ function agentDir() {
   return join(home, ".omp", "agent");
 }
 
-function bundledSidekickPath() {
+function bundledAgentPath(name) {
   try {
-    return join(dirname(fileURLToPath(import.meta.url)), "agents", "fusion-sidekick.md");
+    return join(dirname(fileURLToPath(import.meta.url)), "agents", `${name}.md`);
   } catch {
     return undefined;
   }
 }
 
-/** Install or refresh the sidekick agent definition; returns true if present. */
-function ensureSidekickAgent() {
-  const source = bundledSidekickPath();
-  if (!source || !existsSync(source)) return false;
+/** Install or refresh one bundled agent definition. */
+function ensureBundledAgent(name) {
+  const source = bundledAgentPath(name);
+  if (!source || !existsSync(source)) return;
   const content = readFileSync(source, "utf8");
   const dir = join(agentDir(), "agents");
-  const target = join(dir, "fusion-sidekick.md");
-  const marker = join(dir, SIDEKICK_MARKER);
+  const target = join(dir, `${name}.md`);
+  const marker = join(dir, `.${name}.sha256`);
 
   if (existsSync(target)) {
     const installed = readFileSync(target, "utf8");
@@ -59,20 +61,19 @@ function ensureSidekickAgent() {
       // Already current; backfill the marker so future upgrades can tell
       // our file from a user-modified one.
       if (!existsSync(marker)) writeFileSync(marker, sha256(content));
-      return true;
+      return;
     }
     const markerSha = existsSync(marker) ? readFileSync(marker, "utf8").trim() : undefined;
     // User-modified (or foreign) file: leave it alone.
-    if (!markerSha || sha256(installed) !== markerSha) return true;
+    if (!markerSha || sha256(installed) !== markerSha) return;
   }
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(target, content);
   writeFileSync(marker, sha256(content));
-  return true;
 }
 
-const BRIEF_POLICY = `Give the sidekick the goal, relevant code locations, consequential design decisions, constraints, hard edge cases, and observable acceptance criteria. Let it choose routine implementation details and targeted verification commands. Supply code snippets only when an exact algorithm or interface is itself the decision. Allow grounded pushback; resolve conflicting evidence before proceeding.`;
+const BRIEF_POLICY = `Slice work by deliverable, not by step: each brief is one outcome with its own observable acceptance criteria, and a piece that would take about as long to explain as to do stays in the current worker's brief. Give the worker the goal, relevant code locations, consequential design decisions, constraints, hard edge cases, and observable acceptance criteria. You own the design: state the interfaces, abstractions, configuration, and scope the change may introduce. Workers choose routine implementation details and targeted verification inside those bounds; a new abstraction, option, public API, layer, or scope they believe is needed comes back to you as a proposal with evidence, not as code. Supply code snippets only when an exact algorithm or interface is itself the decision. Allow grounded pushback; resolve conflicting evidence before proceeding.`;
 const SCHEDULING_POLICY = `The task launch returns while the sidekick runs, and its completion report is delivered to you automatically. If you have genuinely independent lead work, do it during the handoff. Otherwise call wait; do not invent work or duplicate the sidekick's investigation. Receive the actual completion report before reviewing or answering. Later briefs go to the same worker by writing the brief as content to agent://<ID>; delivery returns immediately (a parked sidekick is revived with its history), then call wait for its report.`;
 const ENFORCE_HANDOFF = true;
 const CONTRACT = `<fusion_contract>
@@ -81,7 +82,10 @@ You lead a persistent pair. Own user communication, interpretation of ambiguity,
 For each request:
 1. Answer conversation and planning yourself. For hands-on work, inspect only enough to settle the goal and consequential choices, then dispatch a real brief. A promise or idle worker is not delegation.
 2. ${BRIEF_POLICY}
-3. Create agent "${SIDEKICK_AGENT}" with requested name "${SIDEKICK_NAME}" through task on its first real assignment. Retain the ID task returns (it can differ from the requested name) and reuse it, recovering it through read history:// when necessary. Do not spawn a second sidekick while one exists. Its context and runtime persist; share briefs, evidence, and feedback rather than your complete conversation. Mention existing processes when relevant so they are reused.
+3. Roles:
+   - Sidekick: create agent "${SIDEKICK_AGENT}" with requested name "${SIDEKICK_NAME}" through task on its first real assignment. Retain the ID task returns (it can differ from the requested name) and reuse it, recovering it through read history:// when necessary. Do not spawn a second sidekick while one exists. It is the default owner of every write, integrates helper output, and runs the single full verification pass (suites, linters, formatters) once integration is done. Its context and runtime persist; share briefs, evidence, and feedback rather than your complete conversation. Mention existing processes when relevant so they are reused.
+   - Scouts: for read-only exploration of independent areas that would otherwise delay the sidekick or your next decision, spawn ephemeral "${SCOUT_AGENT}" agents (several may run in one task batch). They cannot edit or run commands; ask for compressed findings with file:line evidence, and never send a scout over ground the sidekick already owns.
+   - Helper: run at most one ephemeral "${HELPER_AGENT}" at a time, and only for a slice that (a) writes files no other worker touches, (b) depends only on an interface you froze in its brief, and (c) has its own acceptance check. Its brief names the owned files, the frozen interface, and the targeted check. Any slice failing a condition goes to the sidekick serially. Helpers run only their targeted check; full verification stays with the sidekick's integration pass.
 4. ${SCHEDULING_POLICY}
 5. Review the changed code and reported evidence; do not repeat successful checks without a concrete reason to doubt them. Batch corrections into one brief. If guided corrections fail or the worker cannot solve the problem, take over and finish. Keep the user informed of results, not internal delegation ceremony.
 
@@ -278,13 +282,15 @@ export default function fusionMode(pi) {
     },
   });
   pi.on("session_start", async (_e, ctx) => {
-    try {
-      ensureSidekickAgent();
-    } catch (error) {
-      ctx.ui.notify(
-        `Fusion: could not install ${SIDEKICK_AGENT} agent (${error instanceof Error ? error.message : String(error)})`,
-        "warning",
-      );
+    for (const name of BUNDLED_AGENTS) {
+      try {
+        ensureBundledAgent(name);
+      } catch (error) {
+        ctx.ui.notify(
+          `Fusion: could not install ${name} agent (${error instanceof Error ? error.message : String(error)})`,
+          "warning",
+        );
+      }
     }
     await refreshState(ctx);
     if (!ctx.hasUI || autocompleteInstalled) return;

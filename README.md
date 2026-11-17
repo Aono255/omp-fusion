@@ -30,7 +30,7 @@ omp --extension /path/to/omp-fusion
 
 The extension entry point is declared via `omp.extensions` / `pi.extensions` in `package.json`.
 
-On the first `session_start`, the plugin installs the bundled `agents/fusion-sidekick.md` definition into your user agents directory (`~/.omp/agent/agents/`). This is required because npm-installed plugin `agents/` folders are not picked up by omp's task-agent discovery. The installed file carries a content-hash marker: it is refreshed on upgrades but never overwrites a file you have modified yourself.
+On the first `session_start`, the plugin installs the bundled agent definitions (`agents/fusion-sidekick.md`, `agents/fusion-scout.md`, `agents/fusion-helper.md`) into your user agents directory (`~/.omp/agent/agents/`). This is required because npm-installed plugin `agents/` folders are not picked up by omp's task-agent discovery. Each installed file carries its own content-hash marker: it is refreshed on upgrades but never overwrites a file you have modified yourself.
 
 ### Enable Fusion
 
@@ -59,7 +59,7 @@ Other commands:
 - `/fusion lead <model[:level]>`: switches the lead model for this session only; does not change the sidekick.
 - `/fusion lead`: shows the current lead model.
 
-The sidekick model is resolved through omp's `/agents` configuration. The bundled `fusion-sidekick` agent declares the `@smol` role by default, so you can swap the underlying model centrally via role mapping or an agent override.
+The sidekick model is resolved through omp's `/agents` configuration. The bundled `fusion-sidekick`, `fusion-scout`, and `fusion-helper` agents all declare the `@smol` role by default, so you can swap the underlying model centrally via role mapping or per agent via `task.agentModelOverrides`.
 
 For example, if your local model registry provides `devin/swe-2:high`:
 
@@ -92,6 +92,10 @@ flowchart LR
     G -->|blocks plain lead direct execution| X["edit / write / bash / eval / ..."]
     C["fusion_control takeover"] --> X
     C2["fusion_control delegate"] --> G
+    L -->|parallel read-only exploration| SC["fusion-scout x N<br/>ephemeral, read-only"]
+    SC -->|compressed findings| L
+    L -->|at most one isolated slice| HP["fusion-helper<br/>owned files / frozen interface"]
+    HP -->|slice report| L
     W["Activity widget"] --> L
     W --> S
 ```
@@ -102,7 +106,9 @@ flowchart LR
 | --- | --- | --- |
 | Extension entry | `fusion.js` | Registers `/fusion`, `fusion_control`, session events, and the handoff gate; injects the working contract into the lead. |
 | Status bar | `fusion-status.js` | Listens to lead/sidekick lifecycle, message, tool, retry, and compaction events; renders the activity widget. |
-| Sidekick agent | `agents/fusion-sidekick.md` | Defines the persistent worker's role boundaries, brief execution style, and report format. |
+| Sidekick agent | `agents/fusion-sidekick.md` | Defines the persistent worker's role boundaries, integration duty, brief execution style, and report format. |
+| Scout agent | `agents/fusion-scout.md` | Ephemeral read-only explorer (`read`, `grep`, `glob`, `ast_grep`, `web_search` only) returning compressed findings with file:line evidence. |
+| Helper agent | `agents/fusion-helper.md` | Ephemeral writer for one isolated slice; edits only its owned files and runs only its targeted check. |
 | Control tests | `tests/fusion-control.test.mjs` | Verifies toggling, state restoration, the handoff gate, takeover/delegate, and the prompt contract. |
 | Delegation smoke | `tests/delegation-smoke.mjs` | Uses the real omp CLI to verify first-time worker creation, worker reuse on later requests, and normal execution after Fusion is off. |
 | Ablation | `experiments/ablation.mjs` | Compares how briefs, async scheduling, and the handoff gate affect behavior and cost. |
@@ -121,7 +127,7 @@ flowchart LR
 ### The lead owns
 
 - User communication, requirement interpretation, ambiguity handling, and overall planning.
-- Correctness-critical design decisions, key data interpretation, and acceptance criteria.
+- Correctness-critical design decisions, key data interpretation, and acceptance criteria. Design authority stays here: briefs state which interfaces, abstractions, configuration, and scope a change may introduce.
 - Reviewing the sidekick's changes and evidence; deciding whether to accept, correct, or take over.
 - Production/shared-environment queries, complex interactive browser work, and authority actions such as commits, pushes, and PRs.
 - Correctness-critical instructions that must be authored by the lead personally.
@@ -130,10 +136,21 @@ flowchart LR
 
 - Exploring relevant code, implementing changes, and handling routine environment operations per the lead's brief.
 - Running targeted verification directly related to the acceptance criteria.
-- Pushing back with concrete evidence when code evidence conflicts with the brief, rather than guessing silently.
+- Integrating helper slices and running the single full verification pass (suites, linters, formatters) once integration is done.
+- Pushing back with concrete evidence when code evidence conflicts with the brief, rather than guessing silently. New abstractions, options, public APIs, layers, or scope come back as proposals, never as unrequested code.
 - Reporting changes, file paths, verification results, and blockers in the final report.
 
-An effective brief contains: the goal, relevant code locations, key design decisions, constraints, edge cases, and observable acceptance criteria. Unless the algorithm or interface itself has already been decided by the lead, implementation details do not need to be spelled out.
+### Roles
+
+| Role | Agent | Lifetime | May write | Verification |
+| --- | --- | --- | --- | --- |
+| Sidekick | `fusion-sidekick` | Persistent, exactly one | Default owner of every write | Targeted checks per brief; one full pass after integration |
+| Scout | `fusion-scout` | Ephemeral, several per task batch | No (read-only tool list) | None |
+| Helper | `fusion-helper` | Ephemeral, at most one at a time | Only the files its brief assigns | Only the targeted check in its brief |
+
+The lead spawns a helper only when a slice (a) writes files no other worker touches, (b) depends only on an interface the lead froze in the brief, and (c) has its own acceptance check. A slice that fails any condition goes to the sidekick serially. Scouts cover independent areas whose findings would otherwise delay the sidekick or the lead's next decision, never ground the sidekick already owns.
+
+An effective brief is sliced by deliverable, not by step: one outcome with its own observable acceptance criteria. A piece that takes about as long to explain as to do stays in the current worker's brief. The brief contains the goal, relevant code locations, key design decisions, constraints, edge cases, and acceptance criteria. Unless the algorithm or interface itself has already been decided by the lead, implementation details do not need to be spelled out.
 
 ## Handoff safety boundary
 
@@ -204,6 +221,8 @@ npm run smoke:delegation
 
 - **Persistent worker over a fresh agent each time**: reduces context re-establishment and lets multi-round fixes share a runtime; the cost is that the lead must maintain the worker ID and brief boundaries correctly.
 - **Async-first over blind parallelism**: parallel work is used only for genuinely independent lead work, avoiding duplicate investigation and racy edits.
+- **Layered roles over N peer sidekicks**: every extra writer re-explores the codebase, re-runs suites, drifts on design, and adds merge and review load. One persistent sidekick owns writes and full verification; read-only scouts parallelize exploration cheaply; a single helper is reserved for slices isolated by files, interface, and acceptance check.
+- **Lead-owned design**: workers implement inside the interfaces and scope the brief states and propose anything beyond it, so parallel or successive briefs do not accumulate unrequested abstractions.
 - **Runtime gate over prompt-only convention**: the prompt provides collaboration rules while the tool-call gate blocks obvious boundary violations; the lead can still take over explicitly.
 - **State in the session over memory only**: the on/off state survives branch and session navigation; temporary takeover is deliberately not persisted.
 
@@ -214,7 +233,9 @@ omp-fusion/
 ├── fusion.js                    # Plugin entry, commands, contract, handoff gate
 ├── fusion-status.js             # Lead/Sidekick activity widget
 ├── agents/
-│   └── fusion-sidekick.md       # Persistent sidekick definition
+│   ├── fusion-sidekick.md       # Persistent sidekick definition
+│   ├── fusion-scout.md          # Read-only scout definition
+│   └── fusion-helper.md         # Isolated-slice helper definition
 ├── tests/
 │   ├── fusion-control.test.mjs  # Control-logic tests
 │   └── delegation-smoke.mjs     # Real CLI delegation smoke
@@ -229,6 +250,7 @@ omp-fusion/
 - The sidekick model must already be registered and resolvable in your omp environment; the plugin does not install or authorize models for you.
 - The sidekick's working permissions remain bound by the current omp session, tools, and filesystem permissions.
 - The handoff gate only covers the direct-execution entry points the plugin explicitly recognizes; it is not a security sandbox and does not replace review.
+- Role limits (one sidekick, at most one helper, file ownership) are enforced through the lead contract and agent definitions, not by the runtime; only the scout's read-only tool list is a hard restriction. The activity widget tracks the primary sidekick only.
 - `npm run smoke:delegation` is an opt-in integration smoke that uses your environment's omp CLI and model credentials; use the control-logic tests when those are unavailable.
 - Requires omp 18.3.0 or later, where peer messaging moved from the removed `hub` tool to `write agent://<ID>` and `wait`.
 
